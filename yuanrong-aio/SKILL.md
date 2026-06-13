@@ -76,9 +76,20 @@ docker run -d --name yrv-rust --privileged --cgroupns host \
 $S swap yrv-rust function_proxy /staging/function_proxy
 ```
 
-To **compile inside** the container, mount the source tree and build there, then
-`swap` the produced binary. The functionsystem Rust workspace builds with
-`cargo build --release --bin <name>`; the C++ tree builds via its own `build.sh`.
+**The AIO image has NO toolchain** (no cargo/gcc/go/cmake/bazel — runtime only).
+Compilation happens in a **separate compile container** (`compile-ubuntu2004-rust:arm64`,
+e.g. `yr080-arm64-rustfs-compile`: cargo/go/bazel/cmake/protoc/gcc, source mounted at
+`/workspace`), then `swap` the produced binary into the AIO:
+
+```bash
+docker exec yr080-arm64-rustfs-compile bash -lc \
+  'cd /workspace/yuanrong/functionsystem && cargo build --release --bin function_proxy'
+$S swap yrv-rust function_proxy \
+  ~/workspace/code/yr-rust/rustfs-arm64/yuanrong/functionsystem/target/release/function_proxy
+```
+
+Build (compile container) and run (AIO) are decoupled — the AIO stays a small runtime
+image; `swap` bridges them. (C++ stack: build via the tree's `build.sh`, then swap.)
 
 `swap` and `restart` both do a `docker restart` to apply — supervisord here has no
 control socket, so a `docker restart` (which re-runs the deploy with whatever bins
