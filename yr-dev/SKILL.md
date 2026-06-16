@@ -211,6 +211,10 @@ cd yuanrong-functionsystem
 
 ### 编译运行时
 
+> **⚠️ 仓放置 + 版本 pin 规则(最易踩,必读)**
+> 1. **版本必须用超级仓 submodule pin 的 commit,严禁图方便用 master**。先查:`cd yuanrong && git ls-tree HEAD datasystem functionsystem frontend`,按 pin 的 commit 取对应仓(注意 datasystem 的 submodule url 可能是某 fork,如 gitcode `yuchaow/yuanrong-datasystem`,不是 atomgit master)。版本漂移会撞 bazel 依赖 API 不匹配——实测 datasystem master 的 `BUILD.bazel` 用了 `cc_shared_library`,而超级仓 pin 的 `rules_cc 0.0.9` 不导出该符号,`@datasystem_sdk//:shared` 整个包加载失败,bazel 直接编不过。
+> 2. **三大件(datasystem/functionsystem/frontend)的源码须物理放在 `yuanrong/{datasystem,functionsystem,frontend}` 内(submodule 位置)**,不能用同级软链——`frontend/go.mod` 有 `replace => ../api/go`,frontend 必须在 `yuanrong/frontend` 内编,`../api/go` 才能解析到 `yuanrong/api/go`(软链会让 `cd` 进物理路径,相对路径就错)。
+
 ```bash
 # 准备 datasystem 产物
 mkdir -p yuanrong/datasystem/output
@@ -224,12 +228,19 @@ tar -zxf yuanrong-functionsystem/output/metrics.tar.gz -C yuanrong/
 cd yuanrong/frontend
 bash build.sh
 
-# 回到顶层仓，先编 dashboard/faas
-cd yuanrong
-bash go/build.sh
+# 编 dashboard/faas：必须 cd 进 go/ 目录跑(cwd 须是 go module 根)
+# 注意：cd yuanrong; bash go/build.sh 会失败——dashboard 用 `go build <main.go 文件路径>`，
+# 该模式认 cwd 的 module，cwd=顶层仓(无 go.mod)→ "cannot find module providing package yuanrong.org/kernel/..."。
+# build.sh 内部 PROJECT_DIR 由 dirname 算(绝对路径)，从 go/ 跑不受影响。
+cd yuanrong/go
+bash build.sh
+
+# 打包前把 frontend 的 tar 放进 yuanrong/output/：
+# package_yuanrong.sh 会 `cd $OUTPUT_DIR` 后在 set -e 下无条件 `ls *frontend*.tar.gz`(faas/dashboard 由 go/build.sh 自动拷入 output/，唯独 frontend 没人拷)，缺了会退出 2。
+cp -f yuanrong/frontend/output/yr-frontend-*.tar.gz yuanrong/output/ 2>/dev/null || true
 
 cd yuanrong
-bash build.sh -P
+bash build.sh -P   # -j 见下方编译注意事项：先 -j8，OOM 再降
 ```
 
 产物 `output/`:
@@ -240,7 +251,7 @@ bash build.sh -P
 ### 编译注意事项
 
 - `-j` 并发度建议按机器资源动态选择。默认先尝试 `-j8`
-- 如果顶层 `yuanrong/build.sh -P` 阶段出现 Bazel server 异常退出、`Socket closed` 或长编后不稳定，再降到 `-j4 -m 8192`
+- 如果顶层 `yuanrong/build.sh -P` 阶段出现 Bazel server 异常退出、`Socket closed`、**或 `gcc: fatal error: Killed signal terminated program cc1plus`(=内存不足,小内存机/api/cpp 模板编译尤甚)**，再降到 `-j4 -m 8192`。Bazel 缓存在 `build/output`(用 `--network host` + 挂载工作目录时持久),**降并行重跑会从缓存续编、不浪费已编部分**,所以先 -j8 试、撞 OOM 再降是划算的
 - 编译需访问外网下载三方件（如 opentelemetry），国内可能较慢
 - build.sh 和 run.sh 会自动 `source /etc/profile.d/buildtools.sh`
 - `bash build.sh -X off` 禁用异构编译，一般开发不需要
